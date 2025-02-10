@@ -1,1 +1,1 @@
-export API_KEY="your_new_api_key"
+export API_KEY="AIzaSyDxxBiK_1nHKYRUgb-FS_EcPNa_tTOmI6Q"
