@@ -1,232 +1,84 @@
-import os
 import streamlit as st
-from googleapiclient.discovery import build
-from datetime import datetime, timedelta
+import requests
+import re
 
-# Retrieve the YouTube API key from environment variables.
-# Replace "YOUR_DEFAULT_API_KEY" with a fallback if desired.
-API_KEY = os.getenv("AIzaSyDxxBiK_1nHKYRUgb-FS_EcPNa_tTOmI6Q", "YOUR_DEFAULT_API_KEY")
+def get_video_id(url):
+    """
+    Extract the video ID from a YouTube URL.
+    """
+    # This regex tries to cover multiple YouTube URL formats
+    pattern = r"(?:v=|\/)([0-9A-Za-z_-]{11}).*"
+    match = re.search(pattern, url)
+    if match:
+        return match.group(1)
+    return None
 
-def get_search_suggestions(query):
-    """Get search suggestions for the given query."""
-    try:
-        youtube = build("youtube", "v3", developerKey=API_KEY)
-        request = youtube.search().list(
-            part="snippet",
-            q=query,
-            type="video",
-            maxResults=5,
-            regionCode="US"
-        )
-        response = request.execute()
-        suggestions = []
-        for item in response.get("items", []):
-            title = item.get("snippet", {}).get("title")
-            if title:
-                suggestions.append(title)
-        return suggestions
-    except Exception as e:
-        st.error(f"Error fetching search suggestions: {str(e)}")
-        return []
-
-def get_channel_info(channel_id):
-    """Get channel details."""
-    try:
-        youtube = build("youtube", "v3", developerKey=API_KEY)
-        request = youtube.channels().list(
-            part="snippet,statistics",
-            id=channel_id
-        )
-        response = request.execute()
-        if response.get("items"):
-            channel_data = response["items"][0]
-            snippet = channel_data.get("snippet", {})
-            statistics = channel_data.get("statistics", {})
-            thumbnails = snippet.get("thumbnails", {})
-            default_thumbnail = thumbnails.get("default", {}).get("url", "")
-            return {
-                "title": snippet.get("title", "N/A"),
-                "subscribers": statistics.get("subscriberCount", "N/A"),
-                "total_views": statistics.get("viewCount", "N/A"),
-                "thumbnail": default_thumbnail
-            }
-        return None
-    except Exception as e:
-        st.error(f"Error fetching channel info: {str(e)}")
+def list_captions(video_id, api_key):
+    """
+    List available caption tracks for the given video ID.
+    """
+    endpoint = "https://www.googleapis.com/youtube/v3/captions"
+    params = {
+        "part": "snippet",
+        "videoId": video_id,
+        "key": api_key,
+    }
+    response = requests.get(endpoint, params=params)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        st.error(f"Error fetching captions: {response.text}")
         return None
 
-def calculate_outlier_score(views, likes, comments, publish_date):
-    """Calculate an outlier score (1-100) based on video metrics and recency."""
-    try:
-        views = int(views) if views != 'N/A' else 0
-        likes = int(likes) if likes != 'N/A' else 0
-        comments = int(comments) if comments != 'N/A' else 0
-        publish_datetime = datetime.strptime(publish_date, "%Y-%m-%dT%H:%M:%SZ")
-        age_days = (datetime.now() - publish_datetime).days + 1
-        engagement_rate = ((likes + comments) / views) if views > 0 else 0
-        views_per_day = views / age_days
-        normalized_views = min(views_per_day / 10000, 1)
-        normalized_engagement = min(engagement_rate * 100, 1)
-        combined_score = (normalized_views * 0.7) + (normalized_engagement * 0.3)
-        outlier_score = round(combined_score * 100)
-        return max(1, min(100, outlier_score))
-    except Exception as e:
-        st.error(f"Error calculating outlier score: {str(e)}")
-        return 1
+def download_caption(caption_id, api_key):
+    """
+    Download a caption track in SRT format using its caption ID.
+    """
+    endpoint = f"https://www.googleapis.com/youtube/v3/captions/{caption_id}"
+    params = {
+        "tfmt": "srt",  # specify SRT format
+        "key": api_key,
+    }
+    # Note: For some captions (especially auto-generated ones), downloading might require OAuth2.
+    response = requests.get(endpoint, params=params)
+    if response.status_code == 200:
+        return response.text
+    else:
+        st.error(f"Error downloading caption: {response.text}")
+        return None
 
-def youtube_search(query, max_results=10):
-    """Enhanced YouTube search with video and channel metrics."""
-    try:
-        youtube = build("youtube", "v3", developerKey=API_KEY)
-        request = youtube.search().list(
-            part="snippet",
-            q=query,
-            type="video",
-            maxResults=max_results,
-            order="viewCount"
-        )
-        response = request.execute()
-        results = []
-        for item in response.get("items", []):
-            video_id = item.get("id", {}).get("videoId")
-            channel_id = item.get("snippet", {}).get("channelId")
-            if not video_id or not channel_id:
-                continue
+# --- Streamlit UI ---
+st.title("YouTube Captions Downloader")
+st.write("Enter a YouTube video URL to fetch available caption tracks.")
 
-            # Get detailed video statistics.
-            video_request = youtube.videos().list(
-                part="snippet,statistics",
-                id=video_id
-            )
-            video_response = video_request.execute()
-            if not video_response.get("items"):
-                continue
-            video_data = video_response["items"][0]
-            statistics = video_data.get("statistics", {})
-            publish_date = video_data.get("snippet", {}).get("publishedAt", "")
-            if not publish_date:
-                continue
+# Input for YouTube video URL
+video_url = st.text_input("YouTube Video URL:")
 
-            # Get channel info.
-            channel_info = get_channel_info(channel_id)
-            views = statistics.get("viewCount", "N/A")
-            likes = statistics.get("likeCount", "N/A")
-            comments = statistics.get("commentCount", "N/A")
-            outlier_score = calculate_outlier_score(views, likes, comments, publish_date)
+if video_url:
+    video_id = get_video_id(video_url)
+    if video_id:
+        st.write("Fetching captions for video ID:", video_id)
+        # Get the API key from Streamlit secrets (adjust key names if needed)
+        api_key = st.secrets["YT"]["API_KEY"]
+        captions_data = list_captions(video_id, api_key)
+        if captions_data and "items" in captions_data and captions_data["items"]:
+            # Create a dictionary to store available caption tracks
+            caption_options = {}
+            for item in captions_data["items"]:
+                snippet = item["snippet"]
+                language = snippet.get("language", "unknown")
+                name = snippet.get("name", "Default")
+                caption_id = item["id"]
+                label = f"{name} ({language})"
+                caption_options[label] = caption_id
 
-            results.append({
-                "video_id": video_id,
-                "title": item.get("snippet", {}).get("title", "N/A"),
-                "description": item.get("snippet", {}).get("description", ""),
-                "thumbnail": item.get("snippet", {}).get("thumbnails", {}).get("medium", {}).get("url", ""),
-                "views": views,
-                "likes": likes,
-                "comments": comments,
-                "publish_date": publish_date,
-                "outlier_score": outlier_score,
-                "channel": channel_info,
-                "video_url": f"https://www.youtube.com/watch?v={video_id}",
-                "channel_url": f"https://www.youtube.com/channel/{channel_id}"
-            })
-        results.sort(key=lambda x: int(x["views"]) if x["views"] != "N/A" else 0, reverse=True)
-        return results
-    except Exception as e:
-        st.error(f"Error in YouTube search: {str(e)}")
-        return []
-
-def format_number(num):
-    """Format large numbers to K/M/B format."""
-    try:
-        num = int(num)
-        if num >= 1000000000:
-            return f"{num/1000000000:.1f}B"
-        if num >= 1000000:
-            return f"{num/1000000:.1f}M"
-        if num >= 1000:
-            return f"{num/1000:.1f}K"
-        return str(num)
-    except:
-        return "N/A"
-
-def main():
-    """Enhanced main function with search suggestions and channel info."""
-    st.set_page_config(page_title="YouTube Research Tool", layout="wide")
-    st.title("YouTube Topic Research & Analytics Tool")
-    st.markdown("---")
-
-    # Search interface with suggestions.
-    col1, col2, col3 = st.columns([3, 1, 1])
-    with col1:
-        search_term = st.text_input("Enter a search term:", "machine learning")
-        if search_term:
-            suggestions = get_search_suggestions(search_term)
-            if suggestions:
-                selected_suggestion = st.selectbox("Related searches:", ["Current search"] + suggestions)
-                if selected_suggestion != "Current search":
-                    search_term = selected_suggestion
-    with col2:
-        num_results = st.slider("Number of results:", 5, 20, 10)
-    with col3:
-        sort_by = st.selectbox("Sort by:", ["Views", "Outlier Score"])
-
-    if st.button("Search"):
-        with st.spinner("Searching YouTube..."):
-            results = youtube_search(search_term, num_results)
-        if results:
-            if sort_by == "Outlier Score":
-                results.sort(key=lambda x: x["outlier_score"], reverse=True)
-            # Top performer section.
-            top_video = results[0]
-            st.markdown("### :trophy: Top Performing Video")
-            with st.container():
-                col1, col2 = st.columns([1, 2])
-                with col1:
-                    if top_video["thumbnail"]:
-                        st.image(top_video["thumbnail"])
-                with col2:
-                    st.markdown(f"**[{top_video['title']}]({top_video['video_url']})**")
-                    if top_video["channel"]:
-                        st.markdown(
-                            f"**Channel:** [{top_video['channel']['title']}]({top_video['channel_url']}) "
-                            f"({format_number(top_video['channel']['subscribers'])} subscribers)"
-                        )
-                    metrics_col1, metrics_col2 = st.columns(2)
-                    with metrics_col1:
-                        st.metric("Views", format_number(top_video['views']))
-                    with metrics_col2:
-                        st.metric("Outlier Score", top_video["outlier_score"])
-            st.markdown("### All Results")
-            for result in results:
-                with st.container():
-                    col1, col2 = st.columns([1, 2])
-                    with col1:
-                        if result["thumbnail"]:
-                            st.image(result["thumbnail"])
-                    with col2:
-                        st.markdown(f"**[{result['title']}]({result['video_url']})**")
-                        if result["channel"]:
-                            st.markdown(
-                                f"**Channel:** [{result['channel']['title']}]({result['channel_url']}) "
-                                f"({format_number(result['channel']['subscribers'])} subscribers)"
-                            )
-                        metrics_col1, metrics_col2, metrics_col3, metrics_col4 = st.columns(4)
-                        with metrics_col1:
-                            st.metric("Views", format_number(result['views']))
-                        with metrics_col2:
-                            st.metric("Likes", format_number(result['likes']))
-                        with metrics_col3:
-                            st.metric("Comments", format_number(result['comments']))
-                        with metrics_col4:
-                            st.metric("Outlier Score", result["outlier_score"])
-                        try:
-                            publish_date = datetime.strptime(result["publish_date"], "%Y-%m-%dT%H:%M:%SZ")
-                            st.write(f"Published: {publish_date.strftime('%B %d, %Y')}")
-                        except Exception:
-                            st.write("Published date unavailable")
-                        st.markdown(f"[Watch on YouTube]({result['video_url']})")
-                st.markdown("---")
+            selected_caption = st.selectbox("Select a caption track:", list(caption_options.keys()))
+            if st.button("Download Caption"):
+                caption_id = caption_options[selected_caption]
+                srt_content = download_caption(caption_id, api_key)
+                if srt_content:
+                    st.download_button("Download SRT", srt_content, file_name="captions.srt", mime="text/plain")
         else:
-            st.warning("No results found. Try a different search term.")
-
-if __name__ == "__main__":
-    main()
+            st.error("No captions found for this video or captions are not accessible.")
+    else:
+        st.error("Invalid YouTube URL. Please check the URL and try again.")
